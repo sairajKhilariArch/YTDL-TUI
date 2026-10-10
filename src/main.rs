@@ -26,7 +26,7 @@ use std::{
     time::Duration,
 };
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone, Copy)]
 enum AppState {
     SelectDirectory,
     InputQuery,
@@ -35,6 +35,7 @@ enum AppState {
     SelectFolderStructure,
     InputCustomFolder,
     SelectPrefixOption,
+    SelectExtrasOption,
     SelectFormat,
     SelectQuality,
     Downloading,
@@ -84,14 +85,19 @@ struct App {
     prefix_options: Vec<&'static str>,
     prefix_option_index: usize,
 
+    // Extras Options (Subtitles & Chapters)
+    extras_options: Vec<&'static str>,
+    extras_option_index: usize,
+
     // Format & Quality Options
     format_index: usize,
     quality_index: usize,
     formats: Vec<&'static str>,
     qualities: Vec<&'static str>,
 
-    // Progress
+    // Progress & Logs
     logs: Arc<Mutex<Vec<String>>>,
+    log_scroll: usize,
     download_active: Arc<AtomicBool>,
 }
 
@@ -124,6 +130,14 @@ impl App {
             ],
             prefix_option_index: 0,
 
+            extras_options: vec![
+                "None (Standard Media Only)",
+                "Embed Subtitles (Auto-generated EN)",
+                "Embed Video Chapters",
+                "Embed Both Subtitles & Chapters",
+            ],
+            extras_option_index: 0,
+
             format_index: 0,
             quality_index: 0,
             formats: vec!["MP4 (Video + Audio)", "MP3 (Audio Only)"],
@@ -136,6 +150,7 @@ impl App {
             ],
 
             logs: Arc::new(Mutex::new(Vec::new())),
+            log_scroll: 0,
             download_active: Arc::new(AtomicBool::new(false)),
         };
         app.refresh_directory();
@@ -155,6 +170,23 @@ impl App {
         }
         self.dir_entries.sort();
         self.dir_selected_index = 0;
+    }
+
+    fn go_back(&mut self) {
+        self.state = match self.state {
+            AppState::SelectDirectory => AppState::SelectDirectory,
+            AppState::InputQuery => AppState::SelectDirectory,
+            AppState::FetchingMetadata => AppState::InputQuery,
+            AppState::SelectVideos => AppState::InputQuery,
+            AppState::SelectFolderStructure => AppState::SelectVideos,
+            AppState::InputCustomFolder => AppState::SelectFolderStructure,
+            AppState::SelectPrefixOption => AppState::SelectFolderStructure,
+            AppState::SelectExtrasOption => AppState::SelectPrefixOption,
+            AppState::SelectFormat => AppState::SelectExtrasOption,
+            AppState::SelectQuality => AppState::SelectFormat,
+            AppState::Downloading => AppState::SelectQuality,
+            AppState::Finished => AppState::Finished,
+        };
     }
 }
 
@@ -192,10 +224,21 @@ fn run_app<B: ratatui::backend::Backend>(
 
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
+                if key.modifiers.contains(event::KeyModifiers::CONTROL)
+                    && key.code == KeyCode::Char('c')
+                {
+                    return Ok(());
+                }
+
                 match key.code {
-                    KeyCode::Esc => return Ok(()),
-                    KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
-                        return Ok(());
+                    KeyCode::Esc => {
+                        if app.state == AppState::SelectDirectory {
+                            return Ok(());
+                        } else if app.state != AppState::Downloading
+                            && app.state != AppState::Finished
+                        {
+                            app.go_back();
+                        }
                     }
                     KeyCode::Backspace => match app.state {
                         AppState::InputQuery => {
@@ -280,11 +323,18 @@ fn run_app<B: ratatui::backend::Backend>(
                             app.prefix_option_index =
                                 (app.prefix_option_index + 1) % app.prefix_options.len();
                         }
+                        AppState::SelectExtrasOption => {
+                            app.extras_option_index =
+                                (app.extras_option_index + 1) % app.extras_options.len();
+                        }
                         AppState::SelectFormat => {
                             app.format_index = (app.format_index + 1) % app.formats.len();
                         }
                         AppState::SelectQuality => {
                             app.quality_index = (app.quality_index + 1) % app.qualities.len();
+                        }
+                        AppState::Downloading | AppState::Finished => {
+                            app.log_scroll = app.log_scroll.saturating_add(1);
                         }
                         _ => {}
                     },
@@ -309,6 +359,11 @@ fn run_app<B: ratatui::backend::Backend>(
                                 app.prefix_option_index -= 1;
                             }
                         }
+                        AppState::SelectExtrasOption => {
+                            if app.extras_option_index > 0 {
+                                app.extras_option_index -= 1;
+                            }
+                        }
                         AppState::SelectFormat => {
                             if app.format_index > 0 {
                                 app.format_index -= 1;
@@ -318,6 +373,9 @@ fn run_app<B: ratatui::backend::Backend>(
                             if app.quality_index > 0 {
                                 app.quality_index -= 1;
                             }
+                        }
+                        AppState::Downloading | AppState::Finished => {
+                            app.log_scroll = app.log_scroll.saturating_sub(1);
                         }
                         _ => {}
                     },
@@ -351,6 +409,9 @@ fn run_app<B: ratatui::backend::Backend>(
                             }
                         }
                         AppState::SelectPrefixOption => {
+                            app.state = AppState::SelectExtrasOption;
+                        }
+                        AppState::SelectExtrasOption => {
                             app.state = AppState::SelectFormat;
                         }
                         AppState::SelectFormat => {
@@ -382,7 +443,6 @@ fn start_fetch_metadata_thread(app: &mut App) {
     thread::spawn(move || {
         let mut targets = Vec::new();
 
-        // Increased YouTube Search depth to 15 results for richer options
         if !input.starts_with("http://") && !input.starts_with("https://") {
             targets.push(format!("ytsearch15:{}", input));
         } else {
@@ -471,6 +531,7 @@ fn start_batch_download_thread(app: &mut App) {
     let folder_struct_choice = app.folder_structure_index;
     let custom_folder_name = app.custom_folder_input.trim().to_string();
     let prefix_choice = app.prefix_option_index;
+    let extras_choice = app.extras_option_index;
 
     let logs = Arc::clone(&app.logs);
     let download_active = Arc::clone(&app.download_active);
@@ -523,13 +584,24 @@ fn start_batch_download_thread(app: &mut App) {
             cmd.arg("--add-metadata");
             cmd.arg("--convert-thumbnails").arg("jpg");
 
+            // Subtitle and chapter flags
+            if extras_choice == 1 || extras_choice == 3 {
+                cmd.arg("--write-auto-sub")
+                    .arg("--embed-subs")
+                    .arg("--sub-lang")
+                    .arg("en");
+            }
+            if extras_choice == 2 || extras_choice == 3 {
+                cmd.arg("--embed-chapters");
+            }
+
             if is_mp3 {
                 let bitrate = match quality_choice {
                     1 => "320K",
                     2 => "256K",
                     3 => "192K",
                     4 => "128K",
-                    _ => "0", // Best available VBR
+                    _ => "0",
                 };
                 cmd.arg("-x")
                     .arg("--audio-format")
@@ -582,9 +654,10 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
         "3. Select",
         "4. Folder Structure",
         "5. File Prefix",
-        "6. Format",
-        "7. Quality",
-        "8. Download",
+        "6. Extras",
+        "7. Format",
+        "8. Quality",
+        "9. Download",
     ];
 
     let tab_index = match app.state {
@@ -593,9 +666,10 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
         AppState::SelectVideos => 2,
         AppState::SelectFolderStructure | AppState::InputCustomFolder => 3,
         AppState::SelectPrefixOption => 4,
-        AppState::SelectFormat => 5,
-        AppState::SelectQuality => 6,
-        AppState::Downloading | AppState::Finished => 7,
+        AppState::SelectExtrasOption => 5,
+        AppState::SelectFormat => 6,
+        AppState::SelectQuality => 7,
+        AppState::Downloading | AppState::Finished => 8,
     };
 
     let tabs = Tabs::new(titles)
@@ -642,12 +716,13 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
             f.render_widget(list, chunks[1]);
         }
         AppState::InputQuery => {
-            let input_block =
-                Paragraph::new(app.query_input.as_str())
-                    .style(Style::default().fg(Color::Yellow))
-                    .block(Block::default().borders(Borders::ALL).title(
-                        " Search Term OR Playlist/Video URLs (comma separated) | Press Enter ",
-                    ));
+            let input_block = Paragraph::new(app.query_input.as_str())
+                .style(Style::default().fg(Color::Yellow))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(" Search Term OR Playlist/Video URLs (comma separated) | Press Enter | Esc: Back "),
+                );
             f.render_widget(input_block, chunks[1]);
         }
         AppState::FetchingMetadata => {
@@ -656,15 +731,13 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
                     app.state = AppState::SelectVideos;
                 }
             }
-            let info = Paragraph::new(
-                "Parsing YouTube metadata and retrieving search results... Please wait.",
-            )
-            .style(Style::default().fg(Color::Cyan))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" Metadata Lookup "),
-            );
+            let info = Paragraph::new("Parsing YouTube metadata... Please wait.")
+                .style(Style::default().fg(Color::Cyan))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(" Metadata Lookup "),
+                );
             f.render_widget(info, chunks[1]);
         }
         AppState::SelectVideos => {
@@ -694,11 +767,9 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
                 Vec::new()
             };
 
-            let list = List::new(items).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" Select Videos to Download (Space: Toggle | A: Select All | N: Deselect All | Enter: Confirm) "),
-            );
+            let list = List::new(items).block(Block::default().borders(Borders::ALL).title(
+                " Select Videos (Space: Toggle | A: All | N: None | Enter: Confirm | Esc: Back) ",
+            ));
             f.render_widget(list, chunks[1]);
         }
         AppState::SelectFolderStructure => {
@@ -727,6 +798,15 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
                 " Select Filename Prefix Option ",
                 &app.prefix_options,
                 app.prefix_option_index,
+            );
+        }
+        AppState::SelectExtrasOption => {
+            render_list(
+                f,
+                chunks[1],
+                " Select Subtitles & Chapters Options ",
+                &app.extras_options,
+                app.extras_option_index,
             );
         }
         AppState::SelectFormat => {
@@ -792,6 +872,7 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
             let log_items: Vec<ListItem> = logs_guard
                 .iter()
                 .rev()
+                .skip(app.log_scroll)
                 .take(15)
                 .map(|l| ListItem::new(l.as_str()))
                 .collect();
@@ -799,7 +880,7 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
             let logs_list = List::new(log_items).block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(" Console Output Stream "),
+                    .title(" Console Output Stream (↑/↓ to Scroll Logs) "),
             );
             f.render_widget(logs_list, main_chunks[1]);
         }
@@ -807,18 +888,16 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
 
     let footer_text = match app.state {
         AppState::SelectDirectory => "←/→: Change Folder | Enter: Set Directory | Esc: Quit",
-        AppState::InputQuery => "Type Search or Playlist URL | Enter: Fetch Videos | Esc: Quit",
+        AppState::InputQuery => "Type Search or Playlist URL | Enter: Fetch Videos | Esc: Back",
         AppState::FetchingMetadata => "Parsing playlist items...",
-        AppState::SelectVideos => "Space: Toggle | A: All | N: None | Enter: Confirm | Esc: Quit",
-        AppState::SelectFolderStructure => {
-            "↑/↓: Choose folder organization structure | Enter: Select"
-        }
-        AppState::InputCustomFolder => "Type custom subfolder name | Enter: Confirm",
-        AppState::SelectPrefixOption => "↑/↓: Choose filename prefix style | Enter: Select",
-        AppState::SelectFormat | AppState::SelectQuality => {
-            "↑/↓: Navigate | Enter: Select | Esc: Quit"
-        }
-        AppState::Downloading => "Downloading items sequentially... | Esc: Quit",
+        AppState::SelectVideos => "Space: Toggle | A: All | N: None | Enter: Confirm | Esc: Back",
+        AppState::SelectFolderStructure
+        | AppState::SelectPrefixOption
+        | AppState::SelectExtrasOption
+        | AppState::SelectFormat
+        | AppState::SelectQuality => "↑/↓: Choose option | Enter: Select | Esc: Back",
+        AppState::InputCustomFolder => "Type custom subfolder name | Enter: Confirm | Esc: Back",
+        AppState::Downloading => "Downloading items sequentially... | ↑/↓: Scroll Logs",
         AppState::Finished => "Done! | Press Enter or Esc to Exit",
     };
 
