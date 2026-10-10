@@ -16,9 +16,6 @@ A terminal user interface (TUI) for downloading YouTube videos and playlists, bu
 
 Final product builds for **Windows** and **Linux Ubuntu** are available on the repository's Releases page.
 
-### Prerequisites
-
-Make sure you have [yt-dlp](https://github.com/yt-dlp/yt-dlp) and `ffmpeg` installed and available in your system's PATH.
 
 ## License
 
