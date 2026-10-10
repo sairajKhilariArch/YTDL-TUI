@@ -12,8 +12,11 @@ use ratatui::{
     widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Tabs},
 };
 use regex::Regex;
+use serde::Deserialize;
 use std::{
+    fs,
     io::{self, BufRead, BufReader},
+    path::PathBuf,
     process::{Command, Stdio},
     sync::{
         Arc, Mutex,
@@ -25,48 +28,127 @@ use std::{
 
 #[derive(PartialEq)]
 enum AppState {
-    InputUrl,
-    SelectMode,
+    SelectDirectory,
+    InputQuery,
+    FetchingMetadata,
+    SelectVideos,
+    SelectFolderStructure,
+    InputCustomFolder,
+    SelectPrefixOption,
     SelectFormat,
     SelectQuality,
     Downloading,
     Finished,
 }
 
+#[derive(Clone, Debug)]
+struct VideoItem {
+    id: String,
+    title: String,
+    uploader: String,
+    duration: String,
+    url: String,
+    selected: bool,
+}
+
+#[derive(Deserialize, Debug)]
+struct YtDlpJson {
+    id: Option<String>,
+    title: Option<String>,
+    uploader: Option<String>,
+    duration: Option<f64>,
+    duration_string: Option<String>,
+    webpage_url: Option<String>,
+    url: Option<String>,
+}
+
 struct App {
     state: AppState,
-    url_input: String,
 
-    mode_index: usize,
+    // Directory Picker
+    current_dir: PathBuf,
+    dir_entries: Vec<PathBuf>,
+    dir_selected_index: usize,
+
+    // Input & Shared Video Selection
+    query_input: String,
+    fetched_videos: Arc<Mutex<Vec<VideoItem>>>,
+    video_selected_index: usize,
+
+    // Folder Structure Options
+    folder_structures: Vec<&'static str>,
+    folder_structure_index: usize,
+    custom_folder_input: String,
+
+    // File Prefix Options
+    prefix_options: Vec<&'static str>,
+    prefix_option_index: usize,
+
+    // Format & Quality Options
     format_index: usize,
     quality_index: usize,
-
-    modes: Vec<&'static str>,
     formats: Vec<&'static str>,
     qualities: Vec<&'static str>,
 
+    // Progress
     logs: Arc<Mutex<Vec<String>>>,
     download_active: Arc<AtomicBool>,
 }
 
 impl App {
     fn new() -> Self {
-        Self {
-            state: AppState::InputUrl,
-            url_input: String::new(),
-            mode_index: 0,
+        let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let mut app = Self {
+            state: AppState::SelectDirectory,
+            current_dir,
+            dir_entries: Vec::new(),
+            dir_selected_index: 0,
+            query_input: String::new(),
+            fetched_videos: Arc::new(Mutex::new(Vec::new())),
+            video_selected_index: 0,
+
+            folder_structures: vec![
+                "No Subfolder (Flat Destination)",
+                "Organize by Playlist Title / Channel Name",
+                "Organize by Artist / Uploader Name",
+                "Organize by Upload Year",
+                "Create Custom Named Subfolder",
+            ],
+            folder_structure_index: 0,
+            custom_folder_input: String::new(),
+
+            prefix_options: vec![
+                "None (Title only)",
+                "Add Track / Index Number (e.g., 01 - Title)",
+                "Add Upload Date (e.g., 20240815_Title)",
+            ],
+            prefix_option_index: 0,
+
             format_index: 0,
             quality_index: 0,
-            modes: vec![
-                "Auto-detect (Single video or Playlist)",
-                "Force Playlist Download",
-                "Force Single Video Only",
-            ],
             formats: vec!["MP4 (Video + Audio)", "MP3 (Audio Only)"],
             qualities: vec!["Best Available", "1080p", "720p", "480p", "360p"],
+
             logs: Arc::new(Mutex::new(Vec::new())),
             download_active: Arc::new(AtomicBool::new(false)),
+        };
+        app.refresh_directory();
+        app
+    }
+
+    fn refresh_directory(&mut self) {
+        self.dir_entries.clear();
+        if let Ok(entries) = fs::read_dir(&self.current_dir) {
+            for entry in entries.flatten() {
+                if let Ok(ft) = entry.file_type() {
+                    if ft.is_dir() {
+                        self.dir_entries.push(entry.path());
+                    }
+                }
+            }
         }
+        self.dir_entries.sort();
+        self.dir_selected_index = 0;
     }
 }
 
@@ -109,19 +191,73 @@ fn run_app<B: ratatui::backend::Backend>(
                     KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
                         return Ok(());
                     }
-                    KeyCode::Backspace => {
-                        if app.state == AppState::InputUrl {
-                            app.url_input.pop();
+                    KeyCode::Backspace => match app.state {
+                        AppState::InputQuery => {
+                            app.query_input.pop();
+                        }
+                        AppState::InputCustomFolder => {
+                            app.custom_folder_input.pop();
+                        }
+                        _ => {}
+                    },
+                    KeyCode::Char(c) => match app.state {
+                        AppState::InputQuery => {
+                            app.query_input.push(c);
+                        }
+                        AppState::InputCustomFolder => {
+                            app.custom_folder_input.push(c);
+                        }
+                        AppState::SelectVideos => {
+                            if c == ' ' {
+                                if let Ok(mut videos) = app.fetched_videos.lock() {
+                                    if !videos.is_empty() {
+                                        let idx = app.video_selected_index;
+                                        if idx < videos.len() {
+                                            videos[idx].selected = !videos[idx].selected;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    },
+                    KeyCode::Left => {
+                        if app.state == AppState::SelectDirectory {
+                            if let Some(parent) = app.current_dir.parent().map(|p| p.to_path_buf())
+                            {
+                                app.current_dir = parent;
+                                app.refresh_directory();
+                            }
                         }
                     }
-                    KeyCode::Char(c) => {
-                        if app.state == AppState::InputUrl {
-                            app.url_input.push(c);
+                    KeyCode::Right => {
+                        if app.state == AppState::SelectDirectory && !app.dir_entries.is_empty() {
+                            app.current_dir = app.dir_entries[app.dir_selected_index].clone();
+                            app.refresh_directory();
                         }
                     }
                     KeyCode::Down => match app.state {
-                        AppState::SelectMode => {
-                            app.mode_index = (app.mode_index + 1) % app.modes.len();
+                        AppState::SelectDirectory => {
+                            if !app.dir_entries.is_empty() {
+                                app.dir_selected_index =
+                                    (app.dir_selected_index + 1) % app.dir_entries.len();
+                            }
+                        }
+                        AppState::SelectVideos => {
+                            if let Ok(videos) = app.fetched_videos.lock() {
+                                if !videos.is_empty() {
+                                    app.video_selected_index =
+                                        (app.video_selected_index + 1) % videos.len();
+                                }
+                            }
+                        }
+                        AppState::SelectFolderStructure => {
+                            app.folder_structure_index =
+                                (app.folder_structure_index + 1) % app.folder_structures.len();
+                        }
+                        AppState::SelectPrefixOption => {
+                            app.prefix_option_index =
+                                (app.prefix_option_index + 1) % app.prefix_options.len();
                         }
                         AppState::SelectFormat => {
                             app.format_index = (app.format_index + 1) % app.formats.len();
@@ -132,9 +268,24 @@ fn run_app<B: ratatui::backend::Backend>(
                         _ => {}
                     },
                     KeyCode::Up => match app.state {
-                        AppState::SelectMode => {
-                            if app.mode_index > 0 {
-                                app.mode_index -= 1;
+                        AppState::SelectDirectory => {
+                            if app.dir_selected_index > 0 {
+                                app.dir_selected_index -= 1;
+                            }
+                        }
+                        AppState::SelectVideos => {
+                            if app.video_selected_index > 0 {
+                                app.video_selected_index -= 1;
+                            }
+                        }
+                        AppState::SelectFolderStructure => {
+                            if app.folder_structure_index > 0 {
+                                app.folder_structure_index -= 1;
+                            }
+                        }
+                        AppState::SelectPrefixOption => {
+                            if app.prefix_option_index > 0 {
+                                app.prefix_option_index -= 1;
                             }
                         }
                         AppState::SelectFormat => {
@@ -150,23 +301,48 @@ fn run_app<B: ratatui::backend::Backend>(
                         _ => {}
                     },
                     KeyCode::Enter => match app.state {
-                        AppState::InputUrl => {
-                            if !app.url_input.trim().is_empty() {
-                                app.state = AppState::SelectMode;
+                        AppState::SelectDirectory => {
+                            app.state = AppState::InputQuery;
+                        }
+                        AppState::InputQuery => {
+                            if !app.query_input.trim().is_empty() {
+                                app.state = AppState::FetchingMetadata;
+                                start_fetch_metadata_thread(app);
                             }
                         }
-                        AppState::SelectMode => app.state = AppState::SelectFormat,
+                        AppState::SelectVideos => {
+                            if let Ok(videos) = app.fetched_videos.lock() {
+                                if videos.iter().any(|v| v.selected) {
+                                    app.state = AppState::SelectFolderStructure;
+                                }
+                            }
+                        }
+                        AppState::SelectFolderStructure => {
+                            if app.folder_structure_index == 4 {
+                                app.state = AppState::InputCustomFolder;
+                            } else {
+                                app.state = AppState::SelectPrefixOption;
+                            }
+                        }
+                        AppState::InputCustomFolder => {
+                            if !app.custom_folder_input.trim().is_empty() {
+                                app.state = AppState::SelectPrefixOption;
+                            }
+                        }
+                        AppState::SelectPrefixOption => {
+                            app.state = AppState::SelectFormat;
+                        }
                         AppState::SelectFormat => {
                             if app.format_index == 1 {
                                 app.state = AppState::Downloading;
-                                start_download_thread(app);
+                                start_batch_download_thread(app);
                             } else {
                                 app.state = AppState::SelectQuality;
                             }
                         }
                         AppState::SelectQuality => {
                             app.state = AppState::Downloading;
-                            start_download_thread(app);
+                            start_batch_download_thread(app);
                         }
                         AppState::Finished => return Ok(()),
                         _ => {}
@@ -178,84 +354,194 @@ fn run_app<B: ratatui::backend::Backend>(
     }
 }
 
-fn start_download_thread(app: &mut App) {
+fn start_fetch_metadata_thread(app: &mut App) {
+    let input = app.query_input.trim().to_string();
+    let logs = Arc::clone(&app.logs);
+    let fetched_videos = Arc::clone(&app.fetched_videos);
+
+    if let Ok(mut videos) = fetched_videos.lock() {
+        videos.clear();
+    }
+
+    thread::spawn(move || {
+        let mut targets = Vec::new();
+
+        if !input.starts_with("http://") && !input.starts_with("https://") {
+            targets.push(format!("ytsearch5:{}", input));
+        } else {
+            for part in input.split(',') {
+                let trimmed = part.trim();
+                if !trimmed.is_empty() {
+                    targets.push(trimmed.to_string());
+                }
+            }
+        }
+
+        let mut items = Vec::new();
+
+        for target in targets {
+            let output = Command::new("yt-dlp")
+                .arg("-j")
+                .arg("--flat-playlist")
+                .arg(&target)
+                .output();
+
+            if let Ok(out) = output {
+                let stdout_str = String::from_utf8_lossy(&out.stdout);
+                for line in stdout_str.lines() {
+                    if let Ok(parsed) = serde_json::from_str::<YtDlpJson>(line) {
+                        let id = parsed.id.unwrap_or_default();
+                        let title = parsed.title.unwrap_or_else(|| "Unknown Title".into());
+                        let uploader = parsed.uploader.unwrap_or_else(|| "YouTube".into());
+
+                        let duration = match parsed.duration_string {
+                            Some(d) => d,
+                            None => match parsed.duration {
+                                Some(sec) => format!("{}s", sec as u64),
+                                None => "--:--".into(),
+                            },
+                        };
+
+                        let url = if let Some(wp) = parsed.webpage_url {
+                            wp
+                        } else if let Some(u) = parsed.url {
+                            if u.starts_with("http") {
+                                u
+                            } else {
+                                format!("https://www.youtube.com/watch?v={}", u)
+                            }
+                        } else if !id.is_empty() {
+                            format!("https://www.youtube.com/watch?v={}", id)
+                        } else {
+                            target.clone()
+                        };
+
+                        items.push(VideoItem {
+                            id,
+                            title,
+                            uploader,
+                            duration,
+                            url,
+                            selected: true,
+                        });
+                    }
+                }
+            }
+        }
+
+        if let Ok(mut guard) = fetched_videos.lock() {
+            *guard = items;
+        }
+
+        if let Ok(mut guard) = logs.lock() {
+            guard.push("Metadata fetch completed.".to_string());
+        }
+    });
+}
+
+fn start_batch_download_thread(app: &mut App) {
     app.download_active.store(true, Ordering::Relaxed);
-    let url = app.url_input.clone();
+    let target_dir = app.current_dir.clone();
+
+    let selected_videos: Vec<VideoItem> = if let Ok(videos) = app.fetched_videos.lock() {
+        videos.iter().filter(|v| v.selected).cloned().collect()
+    } else {
+        Vec::new()
+    };
+
     let is_mp3 = app.format_index == 1;
-    let mode_choice = app.mode_index;
     let quality_choice = app.quality_index;
+    let folder_struct_choice = app.folder_structure_index;
+    let custom_folder_name = app.custom_folder_input.trim().to_string();
+    let prefix_choice = app.prefix_option_index;
 
     let logs = Arc::clone(&app.logs);
     let download_active = Arc::clone(&app.download_active);
 
     thread::spawn(move || {
-        let (format_flag, output_ext) = if is_mp3 {
-            ("bestaudio/best".to_string(), "mp3")
-        } else {
-            let res_filter = match quality_choice {
-                1 => "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
-                2 => "bestvideo[height<=720]+bestaudio/best[height<=720]",
-                3 => "bestvideo[height<=480]+bestaudio/best[height<=480]",
-                4 => "bestvideo[height<=360]+bestaudio/best[height<=360]",
-                _ => "bestvideo+bestaudio/best",
+        let _ = fs::create_dir_all(&target_dir);
+
+        for video in selected_videos {
+            let (format_flag, output_ext) = if is_mp3 {
+                ("bestaudio/best".to_string(), "mp3")
+            } else {
+                let res_filter = match quality_choice {
+                    1 => "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
+                    2 => "bestvideo[height<=720]+bestaudio/best[height<=720]",
+                    3 => "bestvideo[height<=480]+bestaudio/best[height<=480]",
+                    4 => "bestvideo[height<=360]+bestaudio/best[height<=360]",
+                    _ => "bestvideo+bestaudio/best",
+                };
+                (res_filter.to_string(), "mp4")
             };
-            (res_filter.to_string(), "mp4")
-        };
 
-        let mut cmd = Command::new("yt-dlp");
-        cmd.arg("-f").arg(&format_flag);
-        cmd.arg("--no-overwrites");
-        cmd.arg("--download-archive").arg("archive.txt");
+            // Build File Name Prefix
+            let file_prefix = match prefix_choice {
+                1 => "%(playlist_index)s - ",
+                2 => "%(upload_date)s_",
+                _ => "",
+            };
 
-        if is_mp3 {
-            cmd.arg("-x").arg("--audio-format").arg("mp3");
-        } else {
-            cmd.arg("--merge-output-format").arg("mp4");
-        }
-
-        let final_template = match mode_choice {
-            1 => {
-                cmd.arg("--yes-playlist");
-                format!(
-                    "%(playlist_title)s/%(playlist_index)s - %(title)s.{}",
-                    output_ext
-                )
-            }
-            2 => {
-                cmd.arg("--no-playlist");
-                format!("%(title)s.{}", output_ext)
-            }
-            _ => format!(
-                "%(playlist_title)s/%(playlist_index)s - %(title)s.{}",
-                output_ext
-            ),
-        };
-
-        cmd.arg("-o")
-            .arg(&final_template)
-            .arg("--newline")
-            .arg("--progress")
-            .arg(&url)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
-        if let Ok(mut child) = cmd.spawn() {
-            if let Some(stdout) = child.stdout.take() {
-                let reader = BufReader::new(stdout);
-                for line in reader.lines().flatten() {
-                    if let Ok(mut guard) = logs.lock() {
-                        guard.push(line);
+            // Build Subfolder Structure
+            let custom_path;
+            let folder_prefix: &str = match folder_struct_choice {
+                1 => "%(playlist_title,uploader)s/",
+                2 => "%(uploader)s/",
+                3 => "%(upload_date>%Y)s/",
+                4 => {
+                    if !custom_folder_name.is_empty() {
+                        custom_path = format!("{}/", custom_folder_name);
+                        &custom_path
+                    } else {
+                        ""
                     }
                 }
+                _ => "",
+            };
+
+            let template = format!("{}{}%(title)s.{}", folder_prefix, file_prefix, output_ext);
+
+            let mut cmd = Command::new("yt-dlp");
+            cmd.current_dir(&target_dir);
+            cmd.arg("-f").arg(&format_flag);
+            cmd.arg("--no-overwrites");
+
+            cmd.arg("--embed-thumbnail");
+            cmd.arg("--add-metadata");
+            cmd.arg("--convert-thumbnails").arg("jpg");
+
+            if is_mp3 {
+                cmd.arg("-x").arg("--audio-format").arg("mp3");
+            } else {
+                cmd.arg("--merge-output-format").arg("mp4");
             }
-            let _ = child.wait();
+
+            cmd.arg("-o")
+                .arg(&template)
+                .arg("--newline")
+                .arg("--progress")
+                .arg(&video.url)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+
+            if let Ok(mut child) = cmd.spawn() {
+                if let Some(stdout) = child.stdout.take() {
+                    let reader = BufReader::new(stdout);
+                    for line in reader.lines().flatten() {
+                        if let Ok(mut guard) = logs.lock() {
+                            guard.push(line);
+                        }
+                    }
+                }
+                let _ = child.wait();
+            }
         }
 
         download_active.store(false, Ordering::Relaxed);
     });
 }
 
-fn ui(f: &mut ratatui::Frame, app: &App) {
+fn ui(f: &mut ratatui::Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(1)
@@ -267,25 +553,32 @@ fn ui(f: &mut ratatui::Frame, app: &App) {
         .split(f.size());
 
     let titles = vec![
-        "1. URL Input",
-        "2. Mode",
-        "3. Format",
-        "4. Quality",
-        "5. Download",
+        "1. Destination",
+        "2. Input",
+        "3. Select",
+        "4. Folder Structure",
+        "5. File Prefix",
+        "6. Format",
+        "7. Quality",
+        "8. Download",
     ];
+
     let tab_index = match app.state {
-        AppState::InputUrl => 0,
-        AppState::SelectMode => 1,
-        AppState::SelectFormat => 2,
-        AppState::SelectQuality => 3,
-        AppState::Downloading | AppState::Finished => 4,
+        AppState::SelectDirectory => 0,
+        AppState::InputQuery | AppState::FetchingMetadata => 1,
+        AppState::SelectVideos => 2,
+        AppState::SelectFolderStructure | AppState::InputCustomFolder => 3,
+        AppState::SelectPrefixOption => 4,
+        AppState::SelectFormat => 5,
+        AppState::SelectQuality => 6,
+        AppState::Downloading | AppState::Finished => 7,
     };
 
     let tabs = Tabs::new(titles)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" 🎬 YouTube TUI Downloader "),
+                .title(" 🎬 YouTube Advanced TUI "),
         )
         .style(Style::default().fg(Color::Cyan))
         .highlight_style(
@@ -297,23 +590,117 @@ fn ui(f: &mut ratatui::Frame, app: &App) {
     f.render_widget(tabs, chunks[0]);
 
     match app.state {
-        AppState::InputUrl => {
-            let input_block = Paragraph::new(app.url_input.as_str())
+        AppState::SelectDirectory => {
+            let items: Vec<ListItem> = app
+                .dir_entries
+                .iter()
+                .enumerate()
+                .map(|(i, path)| {
+                    let name = path.file_name().unwrap_or_default().to_string_lossy();
+                    if i == app.dir_selected_index {
+                        ListItem::new(format!(" > 📁 {}/", name)).style(
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        )
+                    } else {
+                        ListItem::new(format!("   📁 {}/", name))
+                            .style(Style::default().fg(Color::White))
+                    }
+                })
+                .collect();
+
+            let title = format!(
+                " Select Save Directory (Current: {}) | Enter: Set Directory | →: Open Folder | ←: Go Up ",
+                app.current_dir.display()
+            );
+            let list = List::new(items).block(Block::default().borders(Borders::ALL).title(title));
+            f.render_widget(list, chunks[1]);
+        }
+        AppState::InputQuery => {
+            let input_block =
+                Paragraph::new(app.query_input.as_str())
+                    .style(Style::default().fg(Color::Yellow))
+                    .block(Block::default().borders(Borders::ALL).title(
+                        " Search Term OR Playlist/Video URLs (comma separated) | Press Enter ",
+                    ));
+            f.render_widget(input_block, chunks[1]);
+        }
+        AppState::FetchingMetadata => {
+            if let Ok(logs) = app.logs.lock() {
+                if logs.iter().any(|l| l.contains("Metadata fetch completed")) {
+                    app.state = AppState::SelectVideos;
+                }
+            }
+            let info = Paragraph::new("Parsing playlist & video metadata... Please wait.")
+                .style(Style::default().fg(Color::Cyan))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(" Metadata Lookup "),
+                );
+            f.render_widget(info, chunks[1]);
+        }
+        AppState::SelectVideos => {
+            let items: Vec<ListItem> = if let Ok(videos) = app.fetched_videos.lock() {
+                videos
+                    .iter()
+                    .enumerate()
+                    .map(|(i, item)| {
+                        let check = if item.selected { "[X]" } else { "[ ]" };
+                        let line = format!(
+                            "{} {} | {} ({})",
+                            check, item.title, item.uploader, item.duration
+                        );
+                        if i == app.video_selected_index {
+                            ListItem::new(format!(" > {}", line)).style(
+                                Style::default()
+                                    .fg(Color::Yellow)
+                                    .add_modifier(Modifier::BOLD),
+                            )
+                        } else {
+                            ListItem::new(format!("   {}", line))
+                                .style(Style::default().fg(Color::White))
+                        }
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+
+            let list = List::new(items).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Select Videos to Download (Space: Toggle | Enter: Confirm) "),
+            );
+            f.render_widget(list, chunks[1]);
+        }
+        AppState::SelectFolderStructure => {
+            render_list(
+                f,
+                chunks[1],
+                " Select Subfolder Organization Option ",
+                &app.folder_structures,
+                app.folder_structure_index,
+            );
+        }
+        AppState::InputCustomFolder => {
+            let input_block = Paragraph::new(app.custom_folder_input.as_str())
                 .style(Style::default().fg(Color::Yellow))
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .title(" Paste Video/Playlist URL (Press Enter to confirm) "),
+                        .title(" Type Custom Subfolder Name (Press Enter) "),
                 );
             f.render_widget(input_block, chunks[1]);
         }
-        AppState::SelectMode => {
+        AppState::SelectPrefixOption => {
             render_list(
                 f,
                 chunks[1],
-                " Select Playlist Option ",
-                &app.modes,
-                app.mode_index,
+                " Select Filename Prefix Option ",
+                &app.prefix_options,
+                app.prefix_option_index,
             );
         }
         AppState::SelectFormat => {
@@ -342,7 +729,7 @@ fn ui(f: &mut ratatui::Frame, app: &App) {
 
             let logs_guard = app.logs.lock().unwrap();
             let mut current_percent = 0;
-            let mut current_msg = "Downloading...".to_string();
+            let mut current_msg = "Downloading batch queue...".to_string();
 
             let re_percent = Regex::new(r"\[download\]\s+(\d+\.\d+)%\s+of\s+([^\s]+)").unwrap();
             for log in logs_guard.iter().rev() {
@@ -357,7 +744,7 @@ fn ui(f: &mut ratatui::Frame, app: &App) {
 
             if app.state == AppState::Finished {
                 current_percent = 100;
-                current_msg = "Download Complete! Press Enter/ESC to exit.".to_string();
+                current_msg = "All Downloads Complete! Press Enter/ESC to exit.".to_string();
             }
 
             let gauge = Gauge::default()
@@ -393,12 +780,20 @@ fn ui(f: &mut ratatui::Frame, app: &App) {
     }
 
     let footer_text = match app.state {
-        AppState::InputUrl => "Type/Paste URL | Enter: Next | Esc/Ctrl+C: Quit",
-        AppState::SelectMode | AppState::SelectFormat | AppState::SelectQuality => {
+        AppState::SelectDirectory => "←/→: Change Folder | Enter: Set Directory | Esc: Quit",
+        AppState::InputQuery => "Type Search or Playlist URL | Enter: Fetch Videos | Esc: Quit",
+        AppState::FetchingMetadata => "Parsing playlist items...",
+        AppState::SelectVideos => "Space: Toggle Checkbox | Enter: Confirm | Esc: Quit",
+        AppState::SelectFolderStructure => {
+            "↑/↓: Choose folder organization structure | Enter: Select"
+        }
+        AppState::InputCustomFolder => "Type custom subfolder name | Enter: Confirm",
+        AppState::SelectPrefixOption => "↑/↓: Choose filename prefix style | Enter: Select",
+        AppState::SelectFormat | AppState::SelectQuality => {
             "↑/↓: Navigate | Enter: Select | Esc: Quit"
         }
-        AppState::Downloading => "Downloading in background... | Esc: Quit",
-        AppState::Finished => "Process completed! | Enter or Esc to Exit",
+        AppState::Downloading => "Downloading items sequentially... | Esc: Quit",
+        AppState::Finished => "Done! | Press Enter or Esc to Exit",
     };
 
     let footer = Paragraph::new(footer_text)
@@ -427,3 +822,4 @@ fn render_list(f: &mut ratatui::Frame, area: Rect, title: &str, items: &[&str], 
     let list = List::new(list_items).block(Block::default().borders(Borders::ALL).title(title));
     f.render_widget(list, area);
 }
+
