@@ -48,7 +48,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist
-          mv target/${{ matrix.platform.target }}/release/${{ matrix.platform.bin_name }} dist/yt-grabber-tui-${{ matrix.platform.name }}${{ matrix.platform.extension }}
+          mv target/${{ matrix.platform.target }}/release/${{ matrix.platform.bin_name }} dist/YTDL-TUI-${{ matrix.platform.name }}${{ matrix.platform.extension }}
 
       - name: Upload Binaries to GitHub Release
         uses: svenstaro/upload-release-action@v2
