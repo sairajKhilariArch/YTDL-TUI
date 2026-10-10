@@ -79,8 +79,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         cmd.arg("--merge-output-format").arg("mp4");
     }
 
+    // UPDATED: Use %(title)s to dynamically name the file based on the YouTube video title
     cmd.arg("-o")
-        .arg(format!("downloaded_media.{}", output_ext))
+        .arg(format!("%(title)s.{}", output_ext))
         .arg("--newline")
         .arg("--progress")
         .arg(&video_url)
@@ -111,9 +112,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     child.wait()?;
     pb.finish_with_message("Done!");
 
+    // UPDATED: Let the user know it saved with the actual title
     println!(
-        "\n✅ Download complete! Saved as 'downloaded_media.{}'\n",
-        output_ext
+        "\n✅ Download complete! Saved in your current directory with the original video title.\n"
     );
 
     Ok(())
