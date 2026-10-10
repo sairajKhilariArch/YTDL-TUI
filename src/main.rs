@@ -1,34 +1,46 @@
-
-use dialoguer::{Select, theme::ColorfulTheme};
+use dialoguer::{Input, Select, theme::ColorfulTheme};
 use indicatif::{ProgressBar, ProgressStyle};
 use regex::Regex;
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let video_url = "https://youtu.be/kYNTrRVHNmk?si=f8tZcyTX3ZXjD5EE";
+    println!("🎬 Interactive YouTube CLI Downloader\n");
 
-    println!("🎬 YouTube CLI Downloader\n");
+    // --- 1. Prompt for YouTube URL ---
+    let video_url: String = Input::with_theme(&ColorfulTheme::default())
+        .with_prompt("Paste the YouTube video URL")
+        .validate_with(|input: &String| -> Result<(), &str> {
+            if input.trim().is_empty() {
+                Err("URL cannot be empty")
+            } else if !input.contains("youtube.com") && !input.contains("youtu.be") {
+                Err("Please enter a valid YouTube URL (e.g., https://youtu.be/...)")
+            } else {
+                Ok(())
+            }
+        })
+        .interact_text()?;
 
-    // --- 1. Select Format ---
+    println!();
+
+    // --- 2. Select Format ---
     let format_options = vec!["MP4 (Video + Audio)", "MP3 (Audio Only)"];
     let format_choice = Select::with_theme(&ColorfulTheme::default())
-        .with_prompt("Select download format:")
+        .with_prompt("Select download format")
         .default(0)
         .items(&format_options)
         .interact()?;
 
     let is_mp3 = format_choice == 1;
 
-    // --- 2. Select Resolution / Quality ---
+    // --- 3. Select Resolution / Quality ---
     let (format_flag, output_ext) = if is_mp3 {
-        // MP3 extraction arguments
         ("bestaudio/best".to_string(), "mp3")
     } else {
         let quality_options = vec!["Best Available", "1080p", "720p", "480p", "360p"];
 
         let quality_choice = Select::with_theme(&ColorfulTheme::default())
-            .with_prompt("Select video resolution:")
+            .with_prompt("Select video resolution")
             .default(0)
             .items(&quality_options)
             .interact()?;
@@ -46,7 +58,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\n🚀 Starting Download...\n");
 
-    // --- 3. Terminal GUI Progress Bar ---
+    // --- 4. Terminal Progress Bar Setup ---
     let pb = ProgressBar::new(100);
     pb.set_style(
         ProgressStyle::default_bar()
@@ -57,7 +69,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let re_percent =
         Regex::new(r"\[download\]\s+(\d+\.\d+)%\s+of\s+([^\s]+)\s+at\s+([^\s]+)\s+ETA\s+([^\s]+)")?;
 
-    // --- 4. Build yt-dlp Command ---
+    // --- 5. Run yt-dlp Subprocess ---
     let mut cmd = Command::new("yt-dlp");
     cmd.arg("-f").arg(&format_flag);
 
@@ -71,13 +83,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .arg(format!("downloaded_media.{}", output_ext))
         .arg("--newline")
         .arg("--progress")
-        .arg(video_url)
+        .arg(&video_url)
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
 
     let mut child = cmd.spawn()?;
 
-    // --- 5. Stream Output to Progress Bar ---
+    // --- 6. Stream Live Terminal GUI Output ---
     if let Some(stdout) = child.stdout.take() {
         let reader = BufReader::new(stdout);
 
@@ -100,7 +112,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     pb.finish_with_message("Done!");
 
     println!(
-        "\n✅ Download complete! Saved as 'downloaded_media.{}'",
+        "\n✅ Download complete! Saved as 'downloaded_media.{}'\n",
         output_ext
     );
 
