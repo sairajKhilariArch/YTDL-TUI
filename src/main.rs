@@ -87,6 +87,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::new("yt-dlp");
     cmd.arg("-f").arg(&format_flag);
 
+    // Prevent overwriting files & keep an archive log of downloaded YouTube video IDs
+    cmd.arg("--no-overwrites");
+    cmd.arg("--download-archive").arg("archive.txt");
+
     if is_mp3 {
         cmd.arg("-x").arg("--audio-format").arg("mp3");
     } else {
@@ -94,12 +98,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Configure playlist behavior & output path template cleanly
-    let output_template = match mode_choice {
+    let final_template = match mode_choice {
         1 => {
             // Force Playlist
             cmd.arg("--yes-playlist");
             format!(
-                "%(playlist_title)s/%(playlist_index)02d - %(title)s.{}",
+                "%(playlist_title)s/%(playlist_index)s - %(title)s.{}",
                 output_ext
             )
         }
@@ -109,23 +113,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             format!("%(title)s.{}", output_ext)
         }
         _ => {
-            // Auto-detect: Works for both single videos and playlists seamlessly
+            // Auto-detect
             format!(
-                "%(playlist_title,NA)s/%(playlist_index&{} - |)s%(title)s.{}",
-                "%(playlist_index)02d", output_ext
+                "%(playlist_title)s/%(playlist_index)s - %(title)s.{}",
+                output_ext
             )
-            .replace("NA/", "") // Clean root folder if not a playlist
         }
-    };
-
-    // Use default auto-detect template syntax native to yt-dlp
-    let final_template = if mode_choice == 0 {
-        format!(
-            "%(playlist_title)s/%(playlist_index)s - %(title)s.{}",
-            output_ext
-        )
-    } else {
-        output_template
     };
 
     cmd.arg("-o")
@@ -144,6 +137,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         for line in reader.lines() {
             if let Ok(line_text) = line {
+                // If yt-dlp reports skipping a video, update progress bar message
+                if line_text.contains("has already been recorded in the archive")
+                    || line_text.contains("has already been downloaded")
+                {
+                    pb.set_message("Skipping already downloaded video...");
+                }
+
                 if let Some(caps) = re_percent.captures(&line_text) {
                     let percent: f64 = caps[1].parse().unwrap_or(0.0);
                     let size = &caps[2];
@@ -161,7 +161,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if status.success() {
         pb.finish_with_message("Done!");
-        println!("\n✅ Download complete! All files saved cleanly.\n");
+        println!("\n✅ Download complete! (Skipped any videos already present in archive).\n");
     } else {
         pb.abandon();
         println!("\n❌ Download failed. Check the output above for errors.\n");
