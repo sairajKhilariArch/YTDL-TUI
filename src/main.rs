@@ -127,7 +127,13 @@ impl App {
             format_index: 0,
             quality_index: 0,
             formats: vec!["MP4 (Video + Audio)", "MP3 (Audio Only)"],
-            qualities: vec!["Best Available", "1080p", "720p", "480p", "360p"],
+            qualities: vec![
+                "Best Available",
+                "1080p (or 320kbps MP3)",
+                "720p (or 256kbps MP3)",
+                "480p (or 192kbps MP3)",
+                "360p (or 128kbps MP3)",
+            ],
 
             logs: Arc::new(Mutex::new(Vec::new())),
             download_active: Arc::new(AtomicBool::new(false)),
@@ -207,8 +213,8 @@ fn run_app<B: ratatui::backend::Backend>(
                         AppState::InputCustomFolder => {
                             app.custom_folder_input.push(c);
                         }
-                        AppState::SelectVideos => {
-                            if c == ' ' {
+                        AppState::SelectVideos => match c {
+                            ' ' => {
                                 if let Ok(mut videos) = app.fetched_videos.lock() {
                                     if !videos.is_empty() {
                                         let idx = app.video_selected_index;
@@ -218,7 +224,22 @@ fn run_app<B: ratatui::backend::Backend>(
                                     }
                                 }
                             }
-                        }
+                            'a' | 'A' => {
+                                if let Ok(mut videos) = app.fetched_videos.lock() {
+                                    for v in videos.iter_mut() {
+                                        v.selected = true;
+                                    }
+                                }
+                            }
+                            'n' | 'N' => {
+                                if let Ok(mut videos) = app.fetched_videos.lock() {
+                                    for v in videos.iter_mut() {
+                                        v.selected = false;
+                                    }
+                                }
+                            }
+                            _ => {}
+                        },
                         _ => {}
                     },
                     KeyCode::Left => {
@@ -333,12 +354,7 @@ fn run_app<B: ratatui::backend::Backend>(
                             app.state = AppState::SelectFormat;
                         }
                         AppState::SelectFormat => {
-                            if app.format_index == 1 {
-                                app.state = AppState::Downloading;
-                                start_batch_download_thread(app);
-                            } else {
-                                app.state = AppState::SelectQuality;
-                            }
+                            app.state = AppState::SelectQuality;
                         }
                         AppState::SelectQuality => {
                             app.state = AppState::Downloading;
@@ -366,8 +382,9 @@ fn start_fetch_metadata_thread(app: &mut App) {
     thread::spawn(move || {
         let mut targets = Vec::new();
 
+        // Increased YouTube Search depth to 15 results for richer options
         if !input.starts_with("http://") && !input.starts_with("https://") {
-            targets.push(format!("ytsearch5:{}", input));
+            targets.push(format!("ytsearch15:{}", input));
         } else {
             for part in input.split(',') {
                 let trimmed = part.trim();
@@ -475,28 +492,24 @@ fn start_batch_download_thread(app: &mut App) {
                 (res_filter.to_string(), "mp4")
             };
 
-            // Build File Name Prefix
             let file_prefix = match prefix_choice {
                 1 => "%(playlist_index)s - ",
                 2 => "%(upload_date)s_",
                 _ => "",
             };
 
-            // Build Subfolder Structure
-            let custom_path;
-            let folder_prefix: &str = match folder_struct_choice {
-                1 => "%(playlist_title,uploader)s/",
-                2 => "%(uploader)s/",
-                3 => "%(upload_date>%Y)s/",
+            let folder_prefix = match folder_struct_choice {
+                1 => "%(playlist_title,uploader)s/".to_string(),
+                2 => "%(uploader)s/".to_string(),
+                3 => "%(upload_date>%Y)s/".to_string(),
                 4 => {
                     if !custom_folder_name.is_empty() {
-                        custom_path = format!("{}/", custom_folder_name);
-                        &custom_path
+                        format!("{}/", custom_folder_name)
                     } else {
-                        ""
+                        "".to_string()
                     }
                 }
-                _ => "",
+                _ => "".to_string(),
             };
 
             let template = format!("{}{}%(title)s.{}", folder_prefix, file_prefix, output_ext);
@@ -511,7 +524,18 @@ fn start_batch_download_thread(app: &mut App) {
             cmd.arg("--convert-thumbnails").arg("jpg");
 
             if is_mp3 {
-                cmd.arg("-x").arg("--audio-format").arg("mp3");
+                let bitrate = match quality_choice {
+                    1 => "320K",
+                    2 => "256K",
+                    3 => "192K",
+                    4 => "128K",
+                    _ => "0", // Best available VBR
+                };
+                cmd.arg("-x")
+                    .arg("--audio-format")
+                    .arg("mp3")
+                    .arg("--audio-quality")
+                    .arg(bitrate);
             } else {
                 cmd.arg("--merge-output-format").arg("mp4");
             }
@@ -632,13 +656,15 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
                     app.state = AppState::SelectVideos;
                 }
             }
-            let info = Paragraph::new("Parsing playlist & video metadata... Please wait.")
-                .style(Style::default().fg(Color::Cyan))
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title(" Metadata Lookup "),
-                );
+            let info = Paragraph::new(
+                "Parsing YouTube metadata and retrieving search results... Please wait.",
+            )
+            .style(Style::default().fg(Color::Cyan))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Metadata Lookup "),
+            );
             f.render_widget(info, chunks[1]);
         }
         AppState::SelectVideos => {
@@ -671,7 +697,7 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
             let list = List::new(items).block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(" Select Videos to Download (Space: Toggle | Enter: Confirm) "),
+                    .title(" Select Videos to Download (Space: Toggle | A: Select All | N: Deselect All | Enter: Confirm) "),
             );
             f.render_widget(list, chunks[1]);
         }
@@ -716,7 +742,7 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
             render_list(
                 f,
                 chunks[1],
-                " Select Quality ",
+                " Select Quality / Bitrate ",
                 &app.qualities,
                 app.quality_index,
             );
@@ -783,7 +809,7 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
         AppState::SelectDirectory => "←/→: Change Folder | Enter: Set Directory | Esc: Quit",
         AppState::InputQuery => "Type Search or Playlist URL | Enter: Fetch Videos | Esc: Quit",
         AppState::FetchingMetadata => "Parsing playlist items...",
-        AppState::SelectVideos => "Space: Toggle Checkbox | Enter: Confirm | Esc: Quit",
+        AppState::SelectVideos => "Space: Toggle | A: All | N: None | Enter: Confirm | Esc: Quit",
         AppState::SelectFolderStructure => {
             "↑/↓: Choose folder organization structure | Enter: Select"
         }
@@ -822,4 +848,3 @@ fn render_list(f: &mut ratatui::Frame, area: Rect, title: &str, items: &[&str], 
     let list = List::new(list_items).block(Block::default().borders(Borders::ALL).title(title));
     f.render_widget(list, area);
 }
-
