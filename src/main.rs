@@ -1,4 +1,3 @@
-
 use crossterm::{
     event::{self, Event, KeyCode},
     execute,
@@ -190,6 +189,7 @@ impl App {
     }
 }
 
+// ! ---------------------------- MAIN FUNCTION--------------------------------------
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -381,6 +381,9 @@ fn run_app<B: ratatui::backend::Backend>(
                     },
                     KeyCode::Enter => match app.state {
                         AppState::SelectDirectory => {
+                            if !app.dir_entries.is_empty() {
+                                app.current_dir = app.dir_entries[app.dir_selected_index].clone();
+                            }
                             app.state = AppState::InputQuery;
                         }
                         AppState::InputQuery => {
@@ -560,7 +563,7 @@ fn start_batch_download_thread(app: &mut App) {
             };
 
             let folder_prefix = match folder_struct_choice {
-                1 => "%(playlist_title,uploader)s/".to_string(),
+                1 => "%(playlist_title|uploader)s/".to_string(),
                 2 => "%(uploader)s/".to_string(),
                 3 => "%(upload_date>%Y)s/".to_string(),
                 4 => {
@@ -576,7 +579,7 @@ fn start_batch_download_thread(app: &mut App) {
             let template = format!("{}{}%(title)s.{}", folder_prefix, file_prefix, output_ext);
 
             let mut cmd = Command::new("yt-dlp");
-            cmd.current_dir(&target_dir);
+            cmd.arg("-P").arg(&target_dir);
             cmd.arg("-f").arg(&format_flag);
             cmd.arg("--no-overwrites");
 
