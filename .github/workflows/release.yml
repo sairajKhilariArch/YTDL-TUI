@@ -1,0 +1,60 @@
+name: Release TUI Binaries
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    name: Build for ${{ matrix.platform.name }}
+    runs-on: ${{ matrix.platform.os }}
+    
+    permissions:
+      contents: write
+
+    strategy:
+      matrix:
+        platform:
+          - name: Linux-x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            bin_name: yt-grabber-tui
+            extension: ""
+            
+          - name: Windows-x86_64
+            os: ubuntu-latest
+            target: x86_64-pc-windows-gnu
+            bin_name: yt-grabber-tui.exe
+            extension: ".exe"
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          target: ${{ matrix.platform.target }}
+
+      - name: Install MinGW for Windows Cross-Compilation
+        if: matrix.platform.target == 'x86_64-pc-windows-gnu'
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
+
+      - name: Build Release Binary
+        run: cargo build --release --target ${{ matrix.platform.target }}
+
+      - name: Prepare Artifact
+        shell: bash
+        run: |
+          mkdir -p dist
+          mv target/${{ matrix.platform.target }}/release/${{ matrix.platform.bin_name }} dist/yt-grabber-tui-${{ matrix.platform.name }}${{ matrix.platform.extension }}
+
+      - name: Upload Binaries to GitHub Release
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: dist/*
+          tag: ${{ github.ref }}
+          file_glob: true
+          overwrite: true
