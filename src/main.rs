@@ -1,3 +1,4 @@
+
 use dialoguer::{Input, Select, theme::ColorfulTheme};
 use indicatif::{ProgressBar, ProgressStyle};
 use regex::Regex;
@@ -9,12 +10,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // --- 1. Prompt for YouTube URL ---
     let video_url: String = Input::with_theme(&ColorfulTheme::default())
-        .with_prompt("Paste the YouTube video URL")
+        .with_prompt("Paste YouTube URL (Video or Playlist)")
         .validate_with(|input: &String| -> Result<(), &str> {
             if input.trim().is_empty() {
                 Err("URL cannot be empty")
             } else if !input.contains("youtube.com") && !input.contains("youtu.be") {
-                Err("Please enter a valid YouTube URL (e.g., https://youtu.be/...)")
+                Err("Please enter a valid YouTube URL (e.g., https://youtu.be/... or playlist link)")
             } else {
                 Ok(())
             }
@@ -23,7 +24,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!();
 
-    // --- 2. Select Format ---
+    // --- 2. Select Download Mode ---
+    let download_modes = vec![
+        "Auto-detect (Single video or Playlist)",
+        "Force Playlist Download",
+        "Force Single Video Only (Ignore playlist link)",
+    ];
+
+    let mode_choice = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Select playlist option")
+        .default(0)
+        .items(&download_modes)
+        .interact()?;
+
+    // --- 3. Select Format ---
     let format_options = vec!["MP4 (Video + Audio)", "MP3 (Audio Only)"];
     let format_choice = Select::with_theme(&ColorfulTheme::default())
         .with_prompt("Select download format")
@@ -33,7 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let is_mp3 = format_choice == 1;
 
-    // --- 3. Select Resolution / Quality ---
+    // --- 4. Select Resolution / Quality ---
     let (format_flag, output_ext) = if is_mp3 {
         ("bestaudio/best".to_string(), "mp3")
     } else {
@@ -58,7 +72,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\n🚀 Starting Download...\n");
 
-    // --- 4. Terminal Progress Bar Setup ---
+    // --- 5. Terminal Progress Bar Setup ---
     let pb = ProgressBar::new(100);
     pb.set_style(
         ProgressStyle::default_bar()
@@ -69,7 +83,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let re_percent =
         Regex::new(r"\[download\]\s+(\d+\.\d+)%\s+of\s+([^\s]+)\s+at\s+([^\s]+)\s+ETA\s+([^\s]+)")?;
 
-    // --- 5. Run yt-dlp Subprocess ---
+    // --- 6. Build yt-dlp Subprocess ---
     let mut cmd = Command::new("yt-dlp");
     cmd.arg("-f").arg(&format_flag);
 
@@ -79,18 +93,52 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         cmd.arg("--merge-output-format").arg("mp4");
     }
 
-    // UPDATED: Use %(title)s to dynamically name the file based on the YouTube video title
+    // Configure playlist behavior & output path template cleanly
+    let output_template = match mode_choice {
+        1 => {
+            // Force Playlist
+            cmd.arg("--yes-playlist");
+            format!(
+                "%(playlist_title)s/%(playlist_index)02d - %(title)s.{}",
+                output_ext
+            )
+        }
+        2 => {
+            // Force Single Video
+            cmd.arg("--no-playlist");
+            format!("%(title)s.{}", output_ext)
+        }
+        _ => {
+            // Auto-detect: Works for both single videos and playlists seamlessly
+            format!(
+                "%(playlist_title,NA)s/%(playlist_index&{} - |)s%(title)s.{}",
+                "%(playlist_index)02d", output_ext
+            )
+            .replace("NA/", "") // Clean root folder if not a playlist
+        }
+    };
+
+    // Use default auto-detect template syntax native to yt-dlp
+    let final_template = if mode_choice == 0 {
+        format!(
+            "%(playlist_title)s/%(playlist_index)s - %(title)s.{}",
+            output_ext
+        )
+    } else {
+        output_template
+    };
+
     cmd.arg("-o")
-        .arg(format!("%(title)s.{}", output_ext))
+        .arg(&final_template)
         .arg("--newline")
         .arg("--progress")
         .arg(&video_url)
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        .stderr(Stdio::inherit());
 
     let mut child = cmd.spawn()?;
 
-    // --- 6. Stream Live Terminal GUI Output ---
+    // --- 7. Stream Live Terminal GUI Output ---
     if let Some(stdout) = child.stdout.take() {
         let reader = BufReader::new(stdout);
 
@@ -109,13 +157,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    child.wait()?;
-    pb.finish_with_message("Done!");
+    let status = child.wait()?;
 
-    // UPDATED: Let the user know it saved with the actual title
-    println!(
-        "\n✅ Download complete! Saved in your current directory with the original video title.\n"
-    );
+    if status.success() {
+        pb.finish_with_message("Done!");
+        println!("\n✅ Download complete! All files saved cleanly.\n");
+    } else {
+        pb.abandon();
+        println!("\n❌ Download failed. Check the output above for errors.\n");
+    }
 
     Ok(())
 }
