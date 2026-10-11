@@ -1,6 +1,6 @@
 [package]
 name = "YTDL-TUI"
-version = "13.0.0"
+version = "13"
 edition = "2024"
 
 [dependencies]
