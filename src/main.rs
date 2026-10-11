@@ -224,6 +224,11 @@ fn run_app<B: ratatui::backend::Backend>(
 
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
+                // FIX: Ignore Release and Repeat events on Windows to prevent double typing
+                if key.kind != crossterm::event::KeyEventKind::Press {
+                    continue;
+                }
+
                 if key.modifiers.contains(event::KeyModifiers::CONTROL)
                     && key.code == KeyCode::Char('c')
                 {
