@@ -3,7 +3,6 @@ use std::io::Write;
 use std::path::Path;
 
 fn ensure_ytdlp_exists() {
-    // Determine the expected binary name based on the OS
     let binary_name = if cfg!(target_os = "windows") {
         "yt-dlp.exe"
     } else {
@@ -12,7 +11,6 @@ fn ensure_ytdlp_exists() {
 
     let local_path = Path::new(binary_name);
 
-    // 1. Check if yt-dlp is already in the local folder or accessible in the system PATH
     if local_path.exists() {
         return;
     }
@@ -23,7 +21,6 @@ fn ensure_ytdlp_exists() {
 
     println!("'yt-dlp' binary not found. Downloading automatically...");
 
-    // 2. Select the correct download URL based on target architecture
     let download_url = if cfg!(target_os = "windows") {
         "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
     } else if cfg!(target_os = "macos") {
@@ -32,7 +29,6 @@ fn ensure_ytdlp_exists() {
         "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp"
     };
 
-    // 3. Download the binary
     match ureq::get(download_url).call() {
         Ok(response) => {
             let mut bytes = Vec::new();
@@ -40,7 +36,6 @@ fn ensure_ytdlp_exists() {
                 if let Ok(mut file) = File::create(&local_path) {
                     let _ = file.write_all(&bytes);
 
-                    // Make executable on Linux/macOS
                     #[cfg(unix)]
                     {
                         use std::os::unix::fs::PermissionsExt;
@@ -257,7 +252,6 @@ impl App {
     }
 }
 
-// ! ---------------------------- MAIN FUNCTION--------------------------------------
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     ensure_ytdlp_exists();
     enable_raw_mode()?;
@@ -293,7 +287,6 @@ fn run_app<B: ratatui::backend::Backend>(
 
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
-                // FIX: Ignore Release and Repeat events on Windows to prevent double typing
                 if key.kind != crossterm::event::KeyEventKind::Press {
                     continue;
                 }
@@ -661,7 +654,6 @@ fn start_batch_download_thread(app: &mut App) {
             cmd.arg("--add-metadata");
             cmd.arg("--convert-thumbnails").arg("jpg");
 
-            // Subtitle and chapter flags
             if extras_choice == 1 || extras_choice == 3 {
                 cmd.arg("--write-auto-sub")
                     .arg("--embed-subs")
@@ -699,13 +691,29 @@ fn start_batch_download_thread(app: &mut App) {
 
             if let Ok(mut child) = cmd.spawn() {
                 if let Some(stdout) = child.stdout.take() {
-                    let reader = BufReader::new(stdout);
-                    for line in reader.lines().flatten() {
-                        if let Ok(mut guard) = logs.lock() {
-                            guard.push(line);
+                    let logs_clone = Arc::clone(&logs);
+                    thread::spawn(move || {
+                        let reader = BufReader::new(stdout);
+                        for line in reader.lines().flatten() {
+                            if let Ok(mut guard) = logs_clone.lock() {
+                                guard.push(line);
+                            }
                         }
-                    }
+                    });
                 }
+
+                if let Some(stderr) = child.stderr.take() {
+                    let logs_clone = Arc::clone(&logs);
+                    thread::spawn(move || {
+                        let reader = BufReader::new(stderr);
+                        for line in reader.lines().flatten() {
+                            if let Ok(mut guard) = logs_clone.lock() {
+                                guard.push(format!("ERR: {}", line));
+                            }
+                        }
+                    });
+                }
+
                 let _ = child.wait();
             }
         }
