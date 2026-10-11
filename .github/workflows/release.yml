@@ -18,7 +18,7 @@ jobs:
         platform:
           - name: Linux-x86_64
             os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
+            target: x86_64-unknown-linux-musl
             bin_name: YTDL-TUI
             extension: ""
             
@@ -41,7 +41,14 @@ jobs:
         if: matrix.platform.target == 'x86_64-pc-windows-gnu'
         run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
 
-      - name: Build Release Binary
+      - name: Build Release Binary (Windows)
+        if: matrix.platform.target == 'x86_64-pc-windows-gnu'
+        run: cargo build --release --target ${{ matrix.platform.target }}
+        env:
+          CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: x86_64-w64-mingw32-gcc
+
+      - name: Build Release Binary (Linux)
+        if: matrix.platform.target == 'x86_64-unknown-linux-musl'
         run: cargo build --release --target ${{ matrix.platform.target }}
 
       - name: Prepare Artifact
