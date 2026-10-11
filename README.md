@@ -12,10 +12,13 @@ A terminal user interface (TUI) for downloading YouTube videos and playlists, bu
 - Video (MP4) and Audio-only (MP3 with configurable bitrate) downloads
 - Real-time download progress bar and live console log stream
 
+## Documentation
+
+- **[How to Use & Prerequisites](USAGE.md)**: Detailed installation guide, system requirements, and step-by-step instructions.
+
 ## Releases
 
-Final product builds for **Windows** and **Linux Ubuntu** are available on the repository's Releases page.
-
+Pre-compiled binaries for **Windows** and **Linux Ubuntu** are available on the repository's [Releases page](https://github.com/sairajKhilariArch/YTDL-TUI/releases).
 
 ## License
 
