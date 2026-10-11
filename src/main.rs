@@ -1,3 +1,71 @@
+use std::fs::File;
+use std::io::Write;
+use std::path::Path;
+
+fn ensure_ytdlp_exists() {
+    // Determine the expected binary name based on the OS
+    let binary_name = if cfg!(target_os = "windows") {
+        "yt-dlp.exe"
+    } else {
+        "yt-dlp"
+    };
+
+    let local_path = Path::new(binary_name);
+
+    // 1. Check if yt-dlp is already in the local folder or accessible in the system PATH
+    if local_path.exists() {
+        return;
+    }
+
+    if is_in_path("yt-dlp") {
+        return;
+    }
+
+    println!("'yt-dlp' binary not found. Downloading automatically...");
+
+    // 2. Select the correct download URL based on target architecture
+    let download_url = if cfg!(target_os = "windows") {
+        "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+    } else if cfg!(target_os = "macos") {
+        "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos"
+    } else {
+        "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp"
+    };
+
+    // 3. Download the binary
+    match ureq::get(download_url).call() {
+        Ok(response) => {
+            let mut bytes = Vec::new();
+            if response.into_reader().read_to_end(&mut bytes).is_ok() {
+                if let Ok(mut file) = File::create(&local_path) {
+                    let _ = file.write_all(&bytes);
+
+                    // Make executable on Linux/macOS
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let _ = fs::set_permissions(local_path, fs::Permissions::from_mode(0o755));
+                    }
+
+                    println!("yt-dlp successfully downloaded!");
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("Failed to download yt-dlp automatically: {}", e);
+        }
+    }
+}
+
+fn is_in_path(cmd: &str) -> bool {
+    Command::new(cmd)
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok()
+}
+
 use crossterm::{
     event::{self, Event, KeyCode},
     execute,
@@ -191,6 +259,7 @@ impl App {
 
 // ! ---------------------------- MAIN FUNCTION--------------------------------------
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ensure_ytdlp_exists();
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
