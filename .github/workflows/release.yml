@@ -18,7 +18,7 @@ jobs:
         platform:
           - name: Linux-x86_64
             os: ubuntu-latest
-            target: x86_64-unknown-linux-musl
+            target: x86_64-unknown-linux-gnu
             bin_name: YTDL-TUI
             extension: ""
             
@@ -37,26 +37,19 @@ jobs:
         with:
           targets: ${{ matrix.platform.target }}
 
-      - name: Install Linker Dependencies
-        run: |
-          sudo apt-get update
-          if [ "${{ matrix.platform.target }}" == "x86_64-pc-windows-gnu" ]; then
-            sudo apt-get install -y gcc-mingw-w64-x86-64
-          elif [ "${{ matrix.platform.target }}" == "x86_64-unknown-linux-musl" ]; then
-            sudo apt-get install -y musl-tools
-          fi
-
-      - name: Build Release Binary (Linux)
-        if: matrix.platform.target == 'x86_64-unknown-linux-musl'
-        run: cargo build --release --target ${{ matrix.platform.target }}
-        env:
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: x86_64-linux-musl-gcc
+      - name: Install Windows MinGW Linker
+        if: matrix.platform.target == 'x86_64-pc-windows-gnu'
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
 
       - name: Build Release Binary (Windows)
         if: matrix.platform.target == 'x86_64-pc-windows-gnu'
         run: cargo build --release --target ${{ matrix.platform.target }}
         env:
           CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: x86_64-w64-mingw32-gcc
+
+      - name: Build Release Binary (Linux)
+        if: matrix.platform.target == 'x86_64-unknown-linux-gnu'
+        run: cargo build --release --target ${{ matrix.platform.target }}
 
       - name: Prepare Artifact
         shell: bash
