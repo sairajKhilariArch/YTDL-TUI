@@ -240,7 +240,7 @@
             const safeUrl = escapeHtml(asset.browser_download_url);
             const kind = escapeHtml(classify(asset.name));
             // GitHub's browser_download_url is the direct URL to the uploaded release file.
-            return `<div class="asset-item"><div class="asset-name"><strong>${safeName}</strong><span>${kind} · ${sizeLabel(asset.size)}</span></div><a class="asset-download" href="${safeUrl}" aria-label="Download ${safeName}">↓ Download</a></div>`;
+            return `<div class="asset-item"><div class="asset-name"><strong>${safeName}</strong><span>${kind} · ${sizeLabel(asset.size)}</span></div><a class="asset-download" href="${safeUrl}" download aria-label="Download ${safeName}">↓ Download</a></div>`;
           }).join('') : '<div class="release-empty">No binary assets attached to this release. Open the release page for source code and notes.</div>';
           return `<article class="release-group"><div class="release-group-head"><div><h3>${name}</h3><p>${tag} · ${escapeHtml(dateText)}${release.prerelease ? ' · Pre-release' : ''}</p></div>${index === 0 ? '<span class="latest-pill">LATEST</span>' : ''}</div><div class="asset-list">${assetMarkup}</div></article>`;
         }).join('');
